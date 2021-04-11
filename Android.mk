@@ -28,6 +28,31 @@ LOCAL_EXPORT_C_INCLUDES := extern/modloader
 LOCAL_SRC_FILES := extern/libmodloader.so
 include $(PREBUILT_SHARED_LIBRARY)
 
+# Creating prebuilt for dependency: songdownloader - version: dev
+include $(CLEAR_VARS)
+LOCAL_MODULE := songdownloader
+LOCAL_EXPORT_C_INCLUDES := extern/songdownloader
+LOCAL_SRC_FILES := extern/libsongdownloader.so
+include $(PREBUILT_SHARED_LIBRARY)
+# Creating prebuilt for dependency: songloader - version: 0.2.1
+include $(CLEAR_VARS)
+LOCAL_MODULE := songloader
+LOCAL_EXPORT_C_INCLUDES := extern/songloader
+LOCAL_SRC_FILES := extern/libsongloader.so
+include $(PREBUILT_SHARED_LIBRARY)
+# Creating prebuilt for dependency: questui - version: 0.6.6
+include $(CLEAR_VARS)
+LOCAL_MODULE := questui
+LOCAL_EXPORT_C_INCLUDES := extern/questui
+LOCAL_SRC_FILES := extern/libquestui.so
+include $(PREBUILT_SHARED_LIBRARY)
+# Creating prebuilt for dependency: custom-types - version: 0.8.2
+include $(CLEAR_VARS)
+LOCAL_MODULE := custom-types
+LOCAL_EXPORT_C_INCLUDES := extern/custom-types
+LOCAL_SRC_FILES := extern/libcustom-types.so
+include $(PREBUILT_SHARED_LIBRARY)
+
 include $(CLEAR_VARS)
 LOCAL_MODULE := beattogether
 LOCAL_SRC_FILES += $(call rwildcard,src/,*.cpp)
@@ -36,8 +61,12 @@ LOCAL_SRC_FILES += $(call rwildcard,extern/beatsaber-hook/src/inline-hook,*.c)
 LOCAL_SHARED_LIBRARIES += modloader
 LOCAL_SHARED_LIBRARIES += beatsaber-hook_1_3_0
 LOCAL_SHARED_LIBRARIES += codegen_0_7_1
+LOCAL_SHARED_LIBRARIES += songloader
+LOCAL_SHARED_LIBRARIES += songdownloader
+LOCAL_SHARED_LIBRARIES += questui
+LOCAL_SHARED_LIBRARIES += custom-types
 LOCAL_LDLIBS += -llog
-LOCAL_CFLAGS += -I'extern/libil2cpp/il2cpp/libil2cpp' -DID='"BeatTogether"' -DVERSION='"$(VERSION)"' -DHOST_NAME='"$(HOST_NAME)"' -DPORT='$(PORT)' -DSTATUS_URL='$(STATUS_URL)' -I'./shared' -I'./extern' -isystem'./extern/codegen/include'
+LOCAL_CFLAGS += -DID='"BeatTogether"' -DVERSION='"$(VERSION)"' -DHOST_NAME='"$(HOST_NAME)"' -DPORT='$(PORT)' -DSTATUS_URL='$(STATUS_URL)'
 LOCAL_CPPFLAGS += -std=c++2a
-LOCAL_C_INCLUDES += ./include ./src
+LOCAL_C_INCLUDES += ./include ./shared ./src ./extern ./extern/libil2cpp/il2cpp/libil2cpp ./extern/codegen/include
 include $(BUILD_SHARED_LIBRARY)

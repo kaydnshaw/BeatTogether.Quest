@@ -10,22 +10,8 @@
   },
   "dependencies": [
     {
-      "id": "beatsaber-hook",
-      "versionRange": "*",
-      "additionalData": {
-        "extraFiles": [
-          "src/inline-hook"
-        ]
-      }
-    },
-    {
-      "id": "codegen",
-      "versionRange": "*",
-      "additionalData": {}
-    },
-    {
-      "id": "libil2cpp",
-      "versionRange": "*",
+      "id": "songloader",
+      "versionRange": "^0.2.1",
       "additionalData": {}
     }
   ],

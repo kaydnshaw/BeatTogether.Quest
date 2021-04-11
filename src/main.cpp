@@ -2,15 +2,16 @@
 #include <fstream>
 #include <string_view>
 
-#include "modloader/shared/modloader.hpp"
-
-#include "beatsaber-hook/shared/utils/typedefs.h"
 #include "beatsaber-hook/shared/utils/il2cpp-utils.hpp"
-#include "beatsaber-hook/shared/utils/logging.hpp"
-#include "beatsaber-hook/shared/utils/utils.h"
 #include "beatsaber-hook/shared/config/config-utils.hpp"
 
+#include "System/Action.hpp"
+
+#include "System/Threading/CancellationToken.hpp"
+using namespace System::Threading;
+
 #include "System/Threading/Tasks/Task_1.hpp"
+using namespace System::Threading::Tasks;
 
 #include "GlobalNamespace/PlatformAuthenticationTokenProvider.hpp"
 #include "GlobalNamespace/AuthenticationToken.hpp"
@@ -30,6 +31,10 @@
 #include "GlobalNamespace/LevelSelectionFlowCoordinator_State.hpp"
 #include "GlobalNamespace/SongPackMask.hpp"
 #include "GlobalNamespace/BeatmapDifficultyMask.hpp"
+#include "GlobalNamespace/MultiplayerLevelLoader.hpp"
+#include "GlobalNamespace/GameplayModifiers.hpp"
+#include "GlobalNamespace/IConnectedPlayer.hpp"
+#include "GlobalNamespace/HMTask.hpp"
 
 using namespace GlobalNamespace;
 
@@ -37,6 +42,10 @@ using namespace GlobalNamespace;
 #include "UnityEngine/Transform.hpp"
 #include "UnityEngine/Resources.hpp"
 #include "TMPro/TextMeshProUGUI.hpp"
+
+#include "songloader/shared/API.hpp"
+#include "songdownloader/shared/BeatSaverAPI.hpp"
+#include "questui/shared/CustomTypes/Components/MainThreadScheduler.hpp"
 
 #ifndef HOST_NAME
 #error "Define HOST_NAME!"
@@ -126,23 +135,10 @@ Logger& getLogger()
     return *logger;
 }
 
-static auto customLevelPrefixLength = 13;
-
-Il2CppString* getCustomLevelStr() {
-    static auto* customStr = il2cpp_utils::createcsstr("custom_level_", il2cpp_utils::StringType::Manual);
-    return customStr;
-}
-
-// Helper method for concatenating two strings using the Concat(System.Object) method.
-Il2CppString* concatHelper(Il2CppString* src, Il2CppString* dst) {
-    static auto* concatMethod = il2cpp_utils::FindMethod(il2cpp_functions::defaults->string_class, "Concat", il2cpp_functions::defaults->string_class, il2cpp_functions::defaults->string_class);
-    return RET_DEFAULT_UNLESS(getLogger(), il2cpp_utils::RunMethod<Il2CppString*>((Il2CppObject*) nullptr, concatMethod, src, dst));
-}
-
-MAKE_HOOK_OFFSETLESS(PlatformAuthenticationTokenProvider_GetAuthenticationToken, System::Threading::Tasks::Task_1<GlobalNamespace::AuthenticationToken>*, PlatformAuthenticationTokenProvider* self)
+MAKE_HOOK_OFFSETLESS(PlatformAuthenticationTokenProvider_GetAuthenticationToken, Task_1<GlobalNamespace::AuthenticationToken>*, PlatformAuthenticationTokenProvider* self)
 {
     getLogger().debug("Returning custom authentication token!");
-    return System::Threading::Tasks::Task_1<AuthenticationToken>::New_ctor(AuthenticationToken(
+    return Task_1<AuthenticationToken>::New_ctor(AuthenticationToken(
         AuthenticationToken::Platform::OculusQuest,
         self->userId,
         self->userName,
@@ -251,6 +247,108 @@ MAKE_HOOK_OFFSETLESS(LevelSelectionNavigationController_Setup, void, LevelSelect
                                              actionButtonText, levelPackToBeSelectedAfterPrecent, startLevelCategory, beatmapLevelToBeSelectedAfterPresent, true);
 }
 
+
+bool IsCustomLevel(const std::string& levelId) {
+    return levelId.starts_with(RuntimeSongLoader::API::GetCustomLevelsPrefix());
+}
+
+bool HasSong(std::string levelId) {
+    for(auto& song : RuntimeSongLoader::API::GetLoadedSongs()) {
+        if(to_utf8(csstrtostr(song->levelID)) == levelId) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string GetHash(const std::string& levelId) {
+    return levelId.substr(RuntimeSongLoader::API::GetCustomLevelsPrefix().length(), levelId.length() - RuntimeSongLoader::API::GetCustomLevelsPrefix().length());
+}
+
+MAKE_HOOK_OFFSETLESS(MultiplayerLevelLoader_LoadLevel, void, MultiplayerLevelLoader* self, BeatmapIdentifierNetSerializable* beatmapId, GameplayModifiers* gameplayModifiers, float initialStartTime) {
+    std::string levelId = to_utf8(csstrtostr(beatmapId->levelID));
+    getLogger().info("MultiplayerLevelLoader_LoadLevel: %s", levelId.c_str());
+    if(IsCustomLevel(levelId)) {
+        if(HasSong(levelId)) {
+            MultiplayerLevelLoader_LoadLevel(self, beatmapId, gameplayModifiers, initialStartTime);
+        } else {
+            BeatSaver::API::GetBeatmapByHashAsync(GetHash(levelId), 
+                [self, beatmapId, gameplayModifiers, initialStartTime] (std::optional<BeatSaver::Beatmap> beatmapOpt) {
+                    if(beatmapOpt.has_value()) {
+                        auto beatmap = beatmapOpt.value();
+                        auto beatmapName = beatmap.GetName();
+                        getLogger().info("Downloading map: %s", beatmapName.c_str());
+                        BeatSaver::API::DownloadBeatmapAsync(beatmap, 
+                            [self, beatmapId, gameplayModifiers, initialStartTime, beatmapName] (bool error) {
+                                if(error) {
+                                    getLogger().info("Failed downloading map: %s", beatmapName.c_str());
+                                } else {
+                                    getLogger().info("Downloaded map: %s", beatmapName.c_str());
+                                    QuestUI::MainThreadScheduler::Schedule(
+                                        [self, beatmapId, gameplayModifiers, initialStartTime] {
+                                            RuntimeSongLoader::API::RefreshSongs(false,
+                                                [self, beatmapId, gameplayModifiers, initialStartTime] (const std::vector<GlobalNamespace::CustomPreviewBeatmapLevel*>& songs) {
+                                                    self->loaderState = MultiplayerLevelLoader::MultiplayerBeatmapLoaderState::NotLoading;
+                                                    MultiplayerLevelLoader_LoadLevel(self, beatmapId, gameplayModifiers, initialStartTime);
+                                                }
+                                            );
+                                        }
+                                    );
+                                }
+                            }
+                        );
+                    }
+                }
+            );
+        }
+    } else {
+        MultiplayerLevelLoader_LoadLevel(self, beatmapId, gameplayModifiers, initialStartTime);
+    }
+}
+
+MAKE_HOOK_OFFSETLESS(NetworkPlayerEntitlementChecker_GetEntitlementStatus, Task_1<EntitlementsStatus>*, NetworkPlayerEntitlementChecker* self, Il2CppString* levelIdCS) {
+    std::string levelId = to_utf8(csstrtostr(levelIdCS));
+    getLogger().info("NetworkPlayerEntitlementChecker_GetEntitlementStatus: %s", levelId.c_str());
+    if(IsCustomLevel(levelId)) {
+        if(HasSong(levelId)) {
+            return Task_1<EntitlementsStatus>::New_ctor(EntitlementsStatus::Ok);
+        } else {
+            auto task = Task_1<EntitlementsStatus>::New_ctor();
+            BeatSaver::API::GetBeatmapByHashAsync(GetHash(levelId), 
+                [task] (std::optional<BeatSaver::Beatmap> beatmap) {
+                    QuestUI::MainThreadScheduler::Schedule(
+                        [task, beatmap] {
+                            if(beatmap.has_value()) {
+                                task->TrySetResult(EntitlementsStatus::NotDownloaded);
+                            } else {
+                                task->TrySetResult(EntitlementsStatus::NotOwned);
+                            }
+                        }
+                    );
+                }
+            );
+            return task;
+        }
+    } else {
+        return NetworkPlayerEntitlementChecker_GetEntitlementStatus(self, levelIdCS);
+    }
+}
+
+MAKE_HOOK_OFFSETLESS(NetworkPlayerEntitlementChecker_GetPlayerLevelEntitlementsAsync, Task_1<EntitlementsStatus>*, NetworkPlayerEntitlementChecker* self, IConnectedPlayer* player, Il2CppString* levelId, CancellationToken token) {
+    auto task = Task_1<EntitlementsStatus>::New_ctor();
+    HMTask::New_ctor(il2cpp_utils::MakeDelegate<System::Action*>(classof(System::Action*),
+        (std::function<void()>)[self, player, levelId, token, task] { 
+            auto returnTask = NetworkPlayerEntitlementChecker_GetPlayerLevelEntitlementsAsync(self, player, levelId, token);
+            auto result = returnTask->get_Result();
+            if(result == EntitlementsStatus::NotDownloaded) {
+                result = EntitlementsStatus::Ok;
+            }
+            task->TrySetResult(result);
+        }
+    ), nullptr)->Run();
+    return task;
+}
+
 extern "C" void setup(ModInfo& info)
 {
     info.id = ID;
@@ -263,7 +361,7 @@ extern "C" void load()
     std::string path = Configuration::getConfigFilePath(modInfo);
     path.replace(path.length() - 4, 4, "cfg");
 
-    getLogger().info("Config path: " + path);
+    getLogger().info("Config path: %s", path.c_str());
     config.read(path);
     // Load and create all C# strings after we attempt to read it.
     // If we failed to read it, we will have default values.
@@ -289,5 +387,10 @@ extern "C" void load()
         il2cpp_utils::FindMethodUnsafe("", "HostLobbySetupViewController", "SetStartGameEnabled", 2));
     INSTALL_HOOK_OFFSETLESS(getLogger(), LevelSelectionNavigationController_Setup,
         il2cpp_utils::FindMethodUnsafe("", "LevelSelectionNavigationController", "Setup", 11));
-
+    INSTALL_HOOK_OFFSETLESS(getLogger(), MultiplayerLevelLoader_LoadLevel,
+        il2cpp_utils::FindMethodUnsafe("", "MultiplayerLevelLoader", "LoadLevel", 3));
+    INSTALL_HOOK_OFFSETLESS(getLogger(), NetworkPlayerEntitlementChecker_GetEntitlementStatus,
+        il2cpp_utils::FindMethodUnsafe("", "NetworkPlayerEntitlementChecker", "GetEntitlementStatus", 1));
+    INSTALL_HOOK_OFFSETLESS(getLogger(), NetworkPlayerEntitlementChecker_GetPlayerLevelEntitlementsAsync,
+        il2cpp_utils::FindMethodUnsafe("", "NetworkPlayerEntitlementChecker", "GetPlayerLevelEntitlementsAsync", 3));
 }
